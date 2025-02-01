@@ -1,6 +1,6 @@
 const express = require('express');
 const app = express();
-const ytdl = require('ytdl-core');
+const ytdl = require('@distube/ytdl-core');  // Se utiliza la librería de DisTube
 const ffmpeg = require('fluent-ffmpeg');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -9,13 +9,13 @@ const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 const Jimp = require('jimp');
 
-// Middleware para JSON
+// Middleware para procesar JSON
 app.use(express.json());
 
 // ---------------------------
 // Endpoint 1: ytmp3Download
 // GET /mp3?url=<URL_DE_YOUTUBE>
-// Responde con el audio en formato MP3 y envía en headers metadatos (título, descripción, thumbnail)
+// Devuelve el audio en formato MP3 y envía metadatos (título, descripción, thumbnail) en los headers.
 // ---------------------------
 app.get('/mp3', async (req, res) => {
   const url = req.query.url;
@@ -24,20 +24,19 @@ app.get('/mp3', async (req, res) => {
   }
 
   try {
-    // Obtiene información del video
+    // Obtiene la información del video utilizando @distube/ytdl-core
     const info = await ytdl.getInfo(url);
     const title = info.videoDetails.title;
     const description = info.videoDetails.description;
     const thumbnails = info.videoDetails.thumbnails;
     const thumbnail = thumbnails[thumbnails.length - 1]?.url || '';
 
-    // Establece los metadatos en los headers
     res.setHeader('X-Titulo', title);
     res.setHeader('X-Descripcion', description);
     res.setHeader('X-Thumbnail', thumbnail);
     res.setHeader('Content-Type', 'audio/mpeg');
 
-    // Inicia la descarga del audio y su conversión a MP3 usando ffmpeg
+    // Se descarga el stream de audio y se convierte a MP3 con ffmpeg
     const stream = ytdl(url, { quality: 'highestaudio' });
     ffmpeg(stream)
       .audioBitrate(128)
@@ -55,7 +54,7 @@ app.get('/mp3', async (req, res) => {
 // ---------------------------
 // Endpoint 2: ytmp4Download
 // GET /mp4?url=<URL_DE_YOUTUBE>
-// Responde con el video en formato MP4 y envía en headers metadatos (título, descripción, thumbnail)
+// Devuelve el video en formato MP4 y envía metadatos en los headers.
 // ---------------------------
 app.get('/mp4', async (req, res) => {
   const url = req.query.url;
@@ -64,7 +63,6 @@ app.get('/mp4', async (req, res) => {
   }
 
   try {
-    // Obtiene información del video
     const info = await ytdl.getInfo(url);
     const title = info.videoDetails.title;
     const description = info.videoDetails.description;
@@ -76,10 +74,9 @@ app.get('/mp4', async (req, res) => {
     res.setHeader('X-Thumbnail', thumbnail);
     res.setHeader('Content-Type', 'video/mp4');
 
-    // Descarga el video (audio y video juntos) en calidad máxima
     ytdl(url, { filter: 'audioandvideo', quality: 'highestvideo' })
       .on('error', (err) => {
-        console.error('Error en ytdl:', err.message);
+        console.error('Error en @distube/ytdl-core:', err.message);
         if (!res.headersSent) res.status(500).json({ error: err.message });
       })
       .pipe(res);
@@ -100,7 +97,6 @@ app.post('/ia', async (req, res) => {
   }
 
   try {
-    // Se utiliza la API pública de Hugging Face para el modelo GPT-2
     const response = await fetch('https://api-inference.huggingface.co/models/gpt2', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -110,7 +106,6 @@ app.post('/ia', async (req, res) => {
     if (result.error) {
       return res.status(500).json({ error: result.error });
     }
-    // Se asume que el resultado es un arreglo de objetos con la clave generated_text
     res.json({ resultado: result[0].generated_text });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -124,7 +119,7 @@ app.post('/ia', async (req, res) => {
 // anota la imagen y retorna la imagen anotada junto con una descripción en los headers.
 // ---------------------------
 
-// Carga el modelo de detección de objetos (coco-ssd) al iniciar la aplicación.
+// Carga del modelo de detección de objetos (coco-ssd) al iniciar la aplicación.
 let objectDetectionModel;
 (async () => {
   try {
@@ -142,12 +137,11 @@ app.post('/image-to-text', upload.single('imagen'), async (req, res) => {
   }
 
   try {
-    // Carga la imagen con Jimp
+    // Procesa la imagen con Jimp
     const image = await Jimp.read(req.file.buffer);
-    // Convierte la imagen a un buffer JPEG
     const imageBuffer = await image.getBufferAsync(Jimp.MIME_JPEG);
 
-    // Decodifica la imagen en un tensor (la función detect de coco-ssd espera un tensor de forma [H, W, 3])
+    // Decodifica la imagen en un tensor para TensorFlow.js
     const tf = require('@tensorflow/tfjs-node');
     const tfImage = tf.node.decodeImage(imageBuffer);
 
@@ -155,7 +149,6 @@ app.post('/image-to-text', upload.single('imagen'), async (req, res) => {
     const predictions = await objectDetectionModel.detect(tfImage);
     tfImage.dispose();
 
-    // Se filtran las detecciones con un umbral mínimo de confianza
     const threshold = 0.8;
     const detections = predictions.filter(pred => pred.score >= threshold);
     const detectedClasses = detections.map(pred => pred.class);
@@ -164,26 +157,21 @@ app.post('/image-to-text', upload.single('imagen'), async (req, res) => {
       ? "Objetos detectados: " + uniqueObjects.join(', ')
       : "No se detectaron objetos con alta confianza.";
 
-    // Anota la imagen: dibuja un rectángulo y escribe la etiqueta para cada detección
-    // Debido a las limitaciones de Jimp para dibujar, se realiza un trazado simple de líneas para el bounding box.
+    // Anota la imagen: dibuja bounding boxes y etiquetas para cada detección
     const font = await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK);
     detections.forEach(pred => {
       const [x, y, width, height] = pred.bbox.map(v => Math.floor(v));
-      // Dibuja líneas horizontales
       for (let i = x; i < x + width; i++) {
         image.setPixelColor(Jimp.cssColorToHex('#FF0000'), i, y);
         image.setPixelColor(Jimp.cssColorToHex('#FF0000'), i, y + height);
       }
-      // Dibuja líneas verticales
       for (let j = y; j < y + height; j++) {
         image.setPixelColor(Jimp.cssColorToHex('#FF0000'), x, j);
         image.setPixelColor(Jimp.cssColorToHex('#FF0000'), x + width, j);
       }
-      // Escribe la etiqueta
       image.print(font, x, y, pred.class);
     });
 
-    // Prepara la imagen anotada para enviar
     const annotatedBuffer = await image.getBufferAsync(Jimp.MIME_JPEG);
     res.setHeader('X-Descripcion', description);
     res.set('Content-Type', 'image/jpeg');
@@ -205,12 +193,10 @@ app.get('/chochox', async (req, res) => {
   }
 
   try {
-    // Se asume que la búsqueda se realiza en esta URL; ajústala según la estructura real del sitio.
     const searchUrl = `https://chochox.com/search?q=${encodeURIComponent(query)}`;
     const response = await axios.get(searchUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
     const $ = cheerio.load(response.data);
 
-    // Se asume que cada resultado está en un div con clase "result" (ajusta el selector según la web actual)
     const firstResult = $('.result').first();
     if (!firstResult.length) {
       return res.status(404).json({ error: "No se encontró ningún resultado" });
@@ -218,7 +204,6 @@ app.get('/chochox', async (req, res) => {
     const enlace = firstResult.find('a').attr('href');
     const titulo = firstResult.text().trim();
 
-    // Se accede a la página del primer resultado para extraer imágenes
     const detailResponse = await axios.get(enlace, { headers: { 'User-Agent': 'Mozilla/5.0' } });
     const $detail = cheerio.load(detailResponse.data);
     const imagenes = [];
